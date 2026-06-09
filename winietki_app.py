@@ -1,29 +1,18 @@
 from __future__ import annotations
 
 import io
-import os
-import queue
 import sys
-import threading
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox
-import tkinter as tk
 
 import fitz
-from PIL import Image, ImageTk
+import streamlit as st
+from PIL import Image
 
 from cr_placecards import PlacecardError, create_placecards_pdf_bytes, normalize_people
 
 
 APP_NAME = "CR Winietki"
-WHITE = "#ffffff"
-TEXT = "#090909"
-MUTED = "#686868"
-BORDER = "#d8d8d8"
-BLACK = "#000000"
-HOVER = "#202020"
-SOFT = "#f7f7f7"
 
 
 @dataclass(frozen=True)
@@ -48,9 +37,11 @@ TEMPLATES: tuple[PlacecardTemplate, ...] = (
     PlacecardTemplate("S-08", "S-08", "Standard", 1.50, "template_08.pdf", "Beyond Infinity - Demo.ttf"),
     PlacecardTemplate("S-09", "S-09", "Standard", 1.50, "template_13.pdf", "Northwell-Regular.ttf"),
     PlacecardTemplate("S-10", "S-10", "Standard", 1.50, "template_06.pdf", "cambria.ttc"),
+
     PlacecardTemplate("O-01", "O-01", "Ozdobne", 1.50, "template_03.pdf", "Gabriola.ttf"),
     PlacecardTemplate("O-02", "O-02", "Ozdobne", 1.50, "template_16.pdf", "Aphrodite Slim Text.ttf"),
     PlacecardTemplate("O-03", "O-03", "Ozdobne", 1.50, "template_22.pdf", "Allura-Regular.otf"),
+
     PlacecardTemplate(
         "O-04",
         "O-04",
@@ -80,6 +71,7 @@ TEMPLATES: tuple[PlacecardTemplate, ...] = (
             },
         ),
     ),
+
     PlacecardTemplate(
         "O-05",
         "O-05",
@@ -100,6 +92,7 @@ TEMPLATES: tuple[PlacecardTemplate, ...] = (
             },
         ),
     ),
+
     PlacecardTemplate("D-01", "D-01", "Dekoracyjne", 1.80, "template_24.pdf", "Aphrodite Slim Text.ttf"),
     PlacecardTemplate("D-02", "D-02", "Dekoracyjne", 1.80, "template_26.pdf", "BirchStd.otf"),
     PlacecardTemplate("D-03", "D-03", "Dekoracyjne", 1.80, "template_28.pdf", "BASKVILL.ttf"),
@@ -111,8 +104,10 @@ TEMPLATES: tuple[PlacecardTemplate, ...] = (
     PlacecardTemplate("D-10", "D-10", "Dekoracyjne", 1.80, "template_27.pdf", "BASKVILL.ttf"),
     PlacecardTemplate("D-11", "D-11", "Dekoracyjne", 1.80, "template_17.pdf", "AGaramondPro-Italic.otf"),
     PlacecardTemplate("D-12", "D-12", "Dekoracyjne", 1.80, "template_25.pdf", "Aphrodite Slim Text.ttf"),
+
     PlacecardTemplate("Z-01", "Z-01", "Zlote", 3.00, "template_19.pdf", "Dynalight-Regular.otf"),
     PlacecardTemplate("Z-04", "Z-04", "Zlote", 3.00, "template_29.pdf", "Allura-Regular.otf"),
+
     PlacecardTemplate(
         "Z-05",
         "Z-05",
@@ -130,6 +125,7 @@ TEMPLATES: tuple[PlacecardTemplate, ...] = (
             },
         ),
     ),
+
     PlacecardTemplate(
         "Z-06",
         "Z-06",
@@ -151,432 +147,8 @@ TEMPLATES: tuple[PlacecardTemplate, ...] = (
     ),
 )
 
+
 CATEGORY_ORDER = ("Standard", "Ozdobne", "Dekoracyjne", "Zlote")
-
-
-@dataclass(frozen=True)
-class WorkerEvent:
-    kind: str
-    message: str = ""
-    pdf_bytes: bytes | None = None
-    page_count: int = 0
-
-
-class RoundedButton(tk.Canvas):
-    def __init__(
-        self,
-        parent,
-        text: str,
-        command,
-        width: int,
-        height: int,
-        bg: str = BLACK,
-        fg: str = WHITE,
-        radius: int = 10,
-        font=("Segoe UI", 12, "bold"),
-    ) -> None:
-        super().__init__(parent, width=width, height=height, bg=WHITE, highlightthickness=0, bd=0)
-        self.command = command
-        self.normal_bg = bg
-        self.hover_bg = HOVER if bg == BLACK else "#eeeeee"
-        self.fg = fg
-        self.radius = radius
-        self.font = font
-        self.text = text
-        self.enabled = True
-        self.bind("<Button-1>", self._click)
-        self.bind("<Enter>", lambda _event: self._draw(self.hover_bg) if self.enabled else None)
-        self.bind("<Leave>", lambda _event: self._draw(self.normal_bg) if self.enabled else None)
-        self._draw(self.normal_bg)
-
-    def set_enabled(self, enabled: bool) -> None:
-        self.enabled = enabled
-        self._draw(self.normal_bg if enabled else "#bdbdbd")
-
-    def set_text(self, text: str) -> None:
-        self.text = text
-        self._draw(self.normal_bg if self.enabled else "#bdbdbd")
-
-    def _click(self, _event) -> None:
-        if self.enabled:
-            self.command()
-
-    def _draw(self, fill: str) -> None:
-        self.delete("all")
-        width = int(self["width"])
-        height = int(self["height"])
-        radius = self.radius
-        self.create_arc(0, 0, radius * 2, radius * 2, start=90, extent=90, fill=fill, outline=fill)
-        self.create_arc(width - radius * 2, 0, width, radius * 2, start=0, extent=90, fill=fill, outline=fill)
-        self.create_arc(
-            width - radius * 2,
-            height - radius * 2,
-            width,
-            height,
-            start=270,
-            extent=90,
-            fill=fill,
-            outline=fill,
-        )
-        self.create_arc(0, height - radius * 2, radius * 2, height, start=180, extent=90, fill=fill, outline=fill)
-        self.create_rectangle(radius, 0, width - radius, height, fill=fill, outline=fill)
-        self.create_rectangle(0, radius, width, height - radius, fill=fill, outline=fill)
-        self.create_text(width / 2, height / 2, text=self.text, fill=self.fg, font=self.font)
-
-
-class ScrollFrame(tk.Frame):
-    def __init__(self, parent: tk.Widget, bg: str = WHITE) -> None:
-        super().__init__(parent, bg=bg)
-        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
-        self.scrollbar = tk.Scrollbar(self, orient=tk.VERTICAL, command=self.canvas.yview)
-        self.inner = tk.Frame(self.canvas, bg=bg)
-        self.window_id = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.inner.bind("<Configure>", self._sync_scrollregion)
-        self.canvas.bind("<Configure>", self._sync_width)
-        self.canvas.bind("<Enter>", lambda _event: self.canvas.bind_all("<MouseWheel>", self._on_mousewheel))
-        self.canvas.bind("<Leave>", lambda _event: self.canvas.unbind_all("<MouseWheel>"))
-        self.bind("<Destroy>", self._on_destroy)
-
-    def _sync_scrollregion(self, _event=None) -> None:
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-    def _sync_width(self, event) -> None:
-        self.canvas.itemconfigure(self.window_id, width=event.width)
-
-    def _on_mousewheel(self, event) -> None:
-        if self.winfo_ismapped():
-            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-    def _on_destroy(self, _event) -> None:
-        try:
-            self.canvas.unbind_all("<MouseWheel>")
-        except tk.TclError:
-            pass
-
-
-class PlacecardApp:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.root.title(APP_NAME)
-        self.root.geometry("1120x780")
-        self.root.minsize(940, 660)
-        self.root.configure(bg=WHITE)
-
-        self.event_queue: queue.Queue[WorkerEvent] = queue.Queue()
-        self.worker: threading.Thread | None = None
-        self.selected_template: PlacecardTemplate | None = None
-        self.generated_pdf: bytes | None = None
-        self.people_raw = ""
-        self.template_thumbnails: dict[str, ImageTk.PhotoImage] = {}
-        self.preview_images: list[ImageTk.PhotoImage] = []
-        self.status_var = tk.StringVar(value="")
-        self.count_var = tk.StringVar(value="")
-        self.generate_button: RoundedButton | None = None
-
-        self._try_set_icon()
-        self._show_template_screen()
-        self.root.after(100, self._poll_queue)
-
-    def _try_set_icon(self) -> None:
-        icon_path = app_resource_path("assets", "autospady.ico")
-        if icon_path.exists():
-            try:
-                self.root.iconbitmap(str(icon_path))
-            except tk.TclError:
-                pass
-
-    def _clear(self) -> None:
-        for child in self.root.winfo_children():
-            child.destroy()
-
-    def _show_template_screen(self) -> None:
-        self._clear()
-        self.generated_pdf = None
-        self.people_raw = ""
-        self.preview_images = []
-        page = tk.Frame(self.root, bg=WHITE, padx=34, pady=30)
-        page.pack(fill=tk.BOTH, expand=True)
-
-        tk.Label(page, text=APP_NAME, bg=WHITE, fg=TEXT, font=("Segoe UI", 26, "bold")).pack(anchor="w")
-        tk.Label(page, text="Wybierz szablon winietki z katalogu.", bg=WHITE, fg=MUTED, font=("Segoe UI", 11)).pack(
-            anchor="w", pady=(4, 24)
-        )
-
-        scroll = ScrollFrame(page, bg=WHITE)
-        scroll.pack(fill=tk.BOTH, expand=True)
-
-        for category in CATEGORY_ORDER:
-            templates = [template for template in TEMPLATES if template.category == category]
-            if not templates:
-                continue
-            section = tk.Frame(scroll.inner, bg=WHITE)
-            section.pack(fill=tk.X, pady=(0, 20))
-            header = tk.Frame(section, bg=WHITE)
-            header.pack(fill=tk.X, padx=(0, 0), pady=(0, 8))
-            tk.Label(header, text=category, bg=WHITE, fg=TEXT, font=("Segoe UI", 18, "bold")).pack(side=tk.LEFT)
-            tk.Label(
-                header,
-                text=f"{format_money(templates[0].price)} / szt.",
-                bg=WHITE,
-                fg=MUTED,
-                font=("Segoe UI", 11),
-            ).pack(side=tk.LEFT, padx=(12, 0), pady=(5, 0))
-
-            grid = tk.Frame(section, bg=WHITE)
-            grid.pack(fill=tk.X)
-            for index, template in enumerate(templates):
-                card = self._template_card(grid, template)
-                card.grid(row=index // 5, column=index % 5, padx=10, pady=10, sticky="n")
-            for column in range(5):
-                grid.grid_columnconfigure(column, weight=1)
-
-    def _template_card(self, parent: tk.Widget, template: PlacecardTemplate) -> tk.Frame:
-        frame = tk.Frame(parent, bg=WHITE, bd=1, relief=tk.SOLID, highlightthickness=1, highlightbackground=BORDER)
-        frame.configure(cursor="hand2")
-        thumbnail = self._template_thumbnail(template)
-        image_label = tk.Label(frame, image=thumbnail, bg=WHITE)
-        image_label.pack(padx=12, pady=(12, 8))
-        tk.Label(frame, text=template.name, bg=WHITE, fg=TEXT, font=("Segoe UI", 13, "bold")).pack()
-        tk.Label(frame, text=f"{format_money(template.price)} / szt.", bg=WHITE, fg=MUTED, font=("Segoe UI", 9)).pack(
-            pady=(2, 10)
-        )
-
-        def choose(_event=None) -> None:
-            self.selected_template = template
-            self._show_people_screen()
-
-        for widget in (frame, image_label):
-            widget.bind("<Button-1>", choose)
-        for child in frame.winfo_children():
-            child.bind("<Button-1>", choose)
-        return frame
-
-    def _template_thumbnail(self, template: PlacecardTemplate) -> ImageTk.PhotoImage:
-        if template.key in self.template_thumbnails:
-            return self.template_thumbnails[template.key]
-
-        try:
-            doc = fitz.open(template_pdf_path(template))
-            pix = doc[0].get_pixmap(matrix=fitz.Matrix(0.55, 0.55), alpha=False)
-            image = Image.open(io.BytesIO(pix.tobytes("png")))
-            image.thumbnail((150, 170), Image.Resampling.LANCZOS)
-            doc.close()
-        except Exception:
-            image = Image.new("RGB", (150, 170), "white")
-        photo = ImageTk.PhotoImage(image)
-        self.template_thumbnails[template.key] = photo
-        return photo
-
-    def _show_people_screen(self) -> None:
-        self._clear()
-        template = self._require_template()
-        shell = tk.Frame(self.root, bg=WHITE)
-        shell.pack(fill=tk.BOTH, expand=True)
-
-        left = tk.Frame(shell, bg=WHITE, padx=34, pady=30)
-        left.pack(side=tk.LEFT, fill=tk.Y)
-        right = tk.Frame(shell, bg=SOFT, padx=24, pady=24)
-        right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-
-        tk.Label(left, text=template.name, bg=WHITE, fg=TEXT, font=("Segoe UI", 26, "bold")).pack(anchor="w")
-        tk.Label(
-            left,
-            text=f"{template.category} | {format_money(template.price)} / szt.",
-            bg=WHITE,
-            fg=MUTED,
-            font=("Segoe UI", 11),
-        ).pack(anchor="w", pady=(4, 4))
-        tk.Label(left, text="Wklej liste osob, jedna osoba w wierszu.", bg=WHITE, fg=MUTED, font=("Segoe UI", 11)).pack(
-            anchor="w", pady=(0, 22)
-        )
-
-        self.people_text = tk.Text(
-            left,
-            width=48,
-            height=20,
-            bd=1,
-            relief=tk.SOLID,
-            highlightthickness=0,
-            font=("Segoe UI", 10),
-            wrap=tk.WORD,
-        )
-        self.people_text.pack(fill=tk.X)
-        self.people_text.bind("<KeyRelease>", self._update_count)
-        if self.people_raw:
-            self.people_text.insert("1.0", self.people_raw)
-        self.people_text.focus_set()
-        self._update_count()
-
-        footer = tk.Frame(left, bg=WHITE)
-        footer.pack(fill=tk.X, pady=(18, 0))
-        tk.Label(footer, textvariable=self.count_var, bg=WHITE, fg=MUTED, font=("Segoe UI", 10)).pack(side=tk.LEFT)
-
-        buttons = tk.Frame(left, bg=WHITE)
-        buttons.pack(fill=tk.X, pady=(22, 0))
-        RoundedButton(buttons, "Szablony", self._show_template_screen, 120, 42, bg="#eeeeee", fg=TEXT).pack(side=tk.LEFT)
-        self.generate_button = RoundedButton(buttons, "Akceptuj", self._generate, 140, 42)
-        self.generate_button.pack(side=tk.LEFT, padx=(12, 0))
-
-        tk.Label(left, textvariable=self.status_var, bg=WHITE, fg=MUTED, font=("Segoe UI", 10), wraplength=410).pack(
-            anchor="w", pady=(18, 0)
-        )
-
-        tk.Label(right, text="Wybrany szablon", bg=SOFT, fg=TEXT, font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        preview = tk.Label(right, image=self._template_thumbnail(template), bg=WHITE, bd=1, relief=tk.SOLID)
-        preview.pack(pady=(18, 0), anchor="n")
-
-    def _update_count(self, _event=None) -> None:
-        count = len(normalize_people(self.people_text.get("1.0", tk.END)))
-        label = "osoba" if count == 1 else "osob"
-        if self.selected_template:
-            total = self.selected_template.price * count
-            self.count_var.set(
-                f"{count} {label} | {format_money(self.selected_template.price)} x {count} = {format_money(total)}"
-            )
-        else:
-            self.count_var.set(f"{count} {label}")
-
-    def _generate(self) -> None:
-        if self.worker and self.worker.is_alive():
-            return
-
-        template = self._require_template()
-        names = normalize_people(self.people_text.get("1.0", tk.END))
-        if not names:
-            messagebox.showerror(APP_NAME, "Wklej liste osob, po jednej osobie w wierszu.")
-            return
-        self.people_raw = self.people_text.get("1.0", tk.END).strip()
-
-        if self.generate_button:
-            self.generate_button.set_enabled(False)
-            self.generate_button.set_text("Tworze...")
-        self.status_var.set("Start generowania...")
-
-        def run() -> None:
-            try:
-                pdf = create_placecards_pdf_bytes(
-                    template_pdf_path(template),
-                    names,
-                    font_path=template_font_path(template),
-                    template_fields=template.fields or None,
-                    progress=lambda done, total: self.event_queue.put(
-                        WorkerEvent("progress", f"Generowanie: {done}/{total}")
-                    ),
-                )
-                self.event_queue.put(WorkerEvent("done", "PDF gotowy.", pdf_bytes=pdf, page_count=len(names)))
-            except Exception as exc:
-                self.event_queue.put(WorkerEvent("error", str(exc)))
-
-        self.worker = threading.Thread(target=run, daemon=True)
-        self.worker.start()
-
-    def _poll_queue(self) -> None:
-        try:
-            while True:
-                event = self.event_queue.get_nowait()
-                if event.kind == "progress":
-                    self.status_var.set(event.message)
-                elif event.kind == "done":
-                    self.generated_pdf = event.pdf_bytes
-                    self.status_var.set(f"Gotowe: {event.page_count} stron.")
-                    if self.generate_button:
-                        self.generate_button.set_enabled(True)
-                        self.generate_button.set_text("Akceptuj")
-                    self._show_preview_screen(event.page_count)
-                elif event.kind == "error":
-                    self.status_var.set("Blad generowania.")
-                    if self.generate_button:
-                        self.generate_button.set_enabled(True)
-                        self.generate_button.set_text("Akceptuj")
-                    messagebox.showerror(APP_NAME, event.message)
-        except queue.Empty:
-            pass
-        self.root.after(100, self._poll_queue)
-
-    def _show_preview_screen(self, page_count: int) -> None:
-        self._clear()
-        template = self._require_template()
-        page = tk.Frame(self.root, bg=WHITE, padx=26, pady=24)
-        page.pack(fill=tk.BOTH, expand=True)
-
-        header = tk.Frame(page, bg=WHITE)
-        header.pack(fill=tk.X)
-        tk.Label(header, text=f"Podglad: {template.name}", bg=WHITE, fg=TEXT, font=("Segoe UI", 22, "bold")).pack(
-            side=tk.LEFT
-        )
-        total = template.price * page_count
-        tk.Label(
-            header,
-            text=f"{page_count} stron | {format_money(template.price)} x {page_count} = {format_money(total)}",
-            bg=WHITE,
-            fg=MUTED,
-            font=("Segoe UI", 11),
-        ).pack(side=tk.LEFT, padx=(12, 0), pady=(6, 0))
-
-        buttons = tk.Frame(header, bg=WHITE)
-        buttons.pack(side=tk.RIGHT)
-        RoundedButton(buttons, "Wroc", self._show_people_screen, 105, 40, bg="#eeeeee", fg=TEXT).pack(side=tk.LEFT)
-        RoundedButton(buttons, "Zapisz PDF", self._save_pdf, 135, 40).pack(side=tk.LEFT, padx=(10, 0))
-
-        scroll = ScrollFrame(page, bg=SOFT)
-        scroll.pack(fill=tk.BOTH, expand=True, pady=(18, 0))
-        self._fill_preview_pages(scroll.inner)
-
-    def _fill_preview_pages(self, parent: tk.Widget) -> None:
-        self.preview_images = []
-        if not self.generated_pdf:
-            return
-
-        try:
-            doc = fitz.open(stream=self.generated_pdf, filetype="pdf")
-            columns = 3
-            for index in range(doc.page_count):
-                pix = doc[index].get_pixmap(matrix=fitz.Matrix(1.15, 1.15), alpha=False)
-                image = Image.open(io.BytesIO(pix.tobytes("png")))
-                image.thumbnail((250, 280), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(image)
-                self.preview_images.append(photo)
-
-                cell = tk.Frame(parent, bg=SOFT, padx=14, pady=14)
-                cell.grid(row=index // columns, column=index % columns, sticky="n")
-                tk.Label(cell, image=photo, bg=WHITE, bd=1, relief=tk.SOLID).pack()
-                tk.Label(cell, text=f"Strona {index + 1}", bg=SOFT, fg=MUTED, font=("Segoe UI", 10)).pack(pady=(8, 0))
-
-            for column in range(columns):
-                parent.grid_columnconfigure(column, weight=1)
-            doc.close()
-        except Exception as exc:
-            tk.Label(parent, text=f"Nie udalo sie pokazac podgladu: {exc}", bg=SOFT, fg=MUTED).pack(pady=30)
-
-    def _save_pdf(self) -> None:
-        if not self.generated_pdf:
-            return
-        template = self._require_template()
-        path = filedialog.asksaveasfilename(
-            title="Zapisz PDF z winietkami",
-            initialdir=str(Path.home() / "Desktop"),
-            initialfile=f"winietki_{template.name}.pdf",
-            defaultextension=".pdf",
-            filetypes=[("PDF", "*.pdf")],
-        )
-        if not path:
-            return
-        output = Path(path)
-        output.write_bytes(self.generated_pdf)
-        try:
-            os.startfile(str(output.parent))
-        except Exception:
-            pass
-
-    def _require_template(self) -> PlacecardTemplate:
-        if self.selected_template is None:
-            raise PlacecardError("Nie wybrano szablonu.")
-        return self.selected_template
 
 
 def app_resource_path(*parts: str) -> Path:
@@ -593,13 +165,229 @@ def template_font_path(template: PlacecardTemplate) -> Path:
 
 
 def format_money(value: float) -> str:
-    return f"{value:.2f}".replace(".", ",") + " zl"
+    return f"{value:.2f}".replace(".", ",") + " zł"
+
+
+@st.cache_data(show_spinner=False)
+def render_template_preview(pdf_path_str: str) -> bytes | None:
+    pdf_path = Path(pdf_path_str)
+
+    if not pdf_path.exists():
+        return None
+
+    try:
+        doc = fitz.open(pdf_path)
+        pix = doc[0].get_pixmap(matrix=fitz.Matrix(0.8, 0.8), alpha=False)
+        image_bytes = pix.tobytes("png")
+        doc.close()
+        return image_bytes
+    except Exception:
+        return None
+
+
+def render_pdf_pages(pdf_bytes: bytes, max_pages: int = 12) -> list[bytes]:
+    images: list[bytes] = []
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    pages_to_show = min(doc.page_count, max_pages)
+
+    for index in range(pages_to_show):
+        pix = doc[index].get_pixmap(matrix=fitz.Matrix(1.2, 1.2), alpha=False)
+        images.append(pix.tobytes("png"))
+
+    doc.close()
+    return images
+
+
+def get_template_by_key(key: str) -> PlacecardTemplate:
+    for template in TEMPLATES:
+        if template.key == key:
+            return template
+
+    raise PlacecardError("Nie znaleziono wybranego szablonu.")
+
+
+def init_state() -> None:
+    if "selected_template_key" not in st.session_state:
+        st.session_state.selected_template_key = TEMPLATES[0].key
+
+    if "generated_pdf" not in st.session_state:
+        st.session_state.generated_pdf = None
+
+    if "generated_count" not in st.session_state:
+        st.session_state.generated_count = 0
+
+
+def show_template_selector() -> PlacecardTemplate:
+    st.subheader("1. Wybierz szablon")
+
+    template_options = {
+        f"{template.category} / {template.name} — {format_money(template.price)} / szt.": template.key
+        for template in TEMPLATES
+    }
+
+    current_template = get_template_by_key(st.session_state.selected_template_key)
+
+    current_label = None
+    for label, key in template_options.items():
+        if key == current_template.key:
+            current_label = label
+            break
+
+    selected_label = st.selectbox(
+        "Szablon",
+        options=list(template_options.keys()),
+        index=list(template_options.keys()).index(current_label),
+    )
+
+    selected_key = template_options[selected_label]
+    st.session_state.selected_template_key = selected_key
+
+    template = get_template_by_key(selected_key)
+
+    preview_bytes = render_template_preview(str(template_pdf_path(template)))
+
+    if preview_bytes:
+        st.image(preview_bytes, caption=f"Podgląd szablonu {template.name}", width=260)
+    else:
+        st.warning(f"Brak podglądu. Sprawdź plik: {template.pdf_file}")
+
+    return template
+
+
+def show_people_input(template: PlacecardTemplate) -> list[str]:
+    st.subheader("2. Wklej listę osób")
+
+    people_raw = st.text_area(
+        "Jedna osoba w jednym wierszu",
+        height=260,
+        placeholder="Anna Kowalska\nJan Nowak\nKatarzyna Wiśniewska",
+    )
+
+    names = normalize_people(people_raw)
+    count = len(names)
+    total = count * template.price
+
+    st.info(f"Liczba osób: {count} | {format_money(template.price)} × {count} = {format_money(total)}")
+
+    return names
+
+
+def generate_pdf(template: PlacecardTemplate, names: list[str]) -> None:
+    if not names:
+        st.error("Wklej listę osób, po jednej osobie w wierszu.")
+        return
+
+    pdf_path = template_pdf_path(template)
+    font_path = template_font_path(template)
+
+    if not pdf_path.exists():
+        st.error(f"Brakuje pliku szablonu: {pdf_path}")
+        return
+
+    if not font_path.exists():
+        st.error(f"Brakuje pliku fontu: {font_path}")
+        return
+
+    progress_bar = st.progress(0)
+    status = st.empty()
+
+    def progress(done: int, total: int) -> None:
+        progress_bar.progress(done / total)
+        status.write(f"Generowanie: {done}/{total}")
+
+    try:
+        with st.spinner("Generuję PDF..."):
+            pdf = create_placecards_pdf_bytes(
+                pdf_path,
+                names,
+                font_path=font_path,
+                template_fields=template.fields or None,
+                progress=progress,
+            )
+
+        st.session_state.generated_pdf = pdf
+        st.session_state.generated_count = len(names)
+
+        progress_bar.progress(1.0)
+        status.success("PDF gotowy.")
+
+    except Exception as exc:
+        st.session_state.generated_pdf = None
+        st.session_state.generated_count = 0
+        st.error(f"Błąd generowania: {exc}")
+
+
+def show_generated_pdf(template: PlacecardTemplate) -> None:
+    pdf = st.session_state.generated_pdf
+
+    if not pdf:
+        return
+
+    count = st.session_state.generated_count
+    total = count * template.price
+
+    st.subheader("3. Pobierz gotowy PDF")
+    st.success(f"Gotowe: {count} stron | razem: {format_money(total)}")
+
+    st.download_button(
+        label="Pobierz PDF",
+        data=pdf,
+        file_name=f"winietki_{template.name}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+
+    st.subheader("Podgląd pierwszych stron")
+
+    try:
+        images = render_pdf_pages(pdf, max_pages=12)
+
+        cols = st.columns(3)
+
+        for index, image_bytes in enumerate(images):
+            with cols[index % 3]:
+                st.image(image_bytes, caption=f"Strona {index + 1}", use_container_width=True)
+
+        if count > 12:
+            st.caption("Pokazano tylko pierwsze 12 stron podglądu. PDF zawiera wszystkie strony.")
+
+    except Exception as exc:
+        st.warning(f"Nie udało się pokazać podglądu PDF: {exc}")
 
 
 def main() -> None:
-    root = tk.Tk()
-    PlacecardApp(root)
-    root.mainloop()
+    st.set_page_config(
+        page_title=APP_NAME,
+        page_icon="🪪",
+        layout="wide",
+    )
+
+    init_state()
+
+    st.title(APP_NAME)
+    st.caption("Generator winietek z gotowych szablonów PDF")
+
+    left, right = st.columns([1, 1.3], gap="large")
+
+    with left:
+        template = show_template_selector()
+        names = show_people_input(template)
+
+        if st.button("Generuj PDF", type="primary", use_container_width=True):
+            generate_pdf(template, names)
+
+    with right:
+        show_generated_pdf(template)
+
+    with st.expander("Informacje techniczne"):
+        st.write("Aplikacja korzysta z plików w folderach:")
+        st.code(
+            """
+assets/placecard_templates/
+assets/placecard_fonts/
+            """.strip()
+        )
 
 
 if __name__ == "__main__":
